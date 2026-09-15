@@ -1,0 +1,12 @@
+import numpy as np
+vector1 = np.array([4, 5, 7])
+vector2 = np.array([1, 8, 6])
+vector_sum = np.add(vector1, vector2)
+print("Vector Addition:", vector_sum)
+matrix1 = np.array([[9, 2],
+                    [8, 4]])
+matrix2 = np.array([[5, 6],
+                    [3, 8]])
+
+matrix_product = np.dot(matrix1, matrix2)
+print("Matrix Multiplication:\n", matrix_product)
