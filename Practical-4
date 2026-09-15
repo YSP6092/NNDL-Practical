@@ -1,0 +1,109 @@
+# Step 1: Imports
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Dense, Flatten, Dropout
+from tensorflow.keras.optimizers import Adam
+from sklearn.metrics import confusion_matrix, classification_report
+import seaborn as sns
+
+# Step 2: Preprocessing
+img_size = 128
+batch_size = 32
+
+train_datagen = ImageDataGenerator(
+    rescale=1./255,
+    shear_range=0.2,
+    zoom_range=0.2,
+    horizontal_flip=True
+)
+
+val_datagen = ImageDataGenerator(rescale=1./255)
+test_datagen = ImageDataGenerator(rescale=1./255)
+
+train_set = train_datagen.flow_from_directory(
+    "/content/dataset/train",
+    target_size=(img_size, img_size),
+    batch_size=batch_size,
+    class_mode='categorical'
+)
+
+val_set = val_datagen.flow_from_directory(
+    "/content/dataset/validation",
+    target_size=(img_size, img_size),
+    batch_size=batch_size,
+    class_mode='categorical'
+)
+
+test_set = test_datagen.flow_from_directory(
+    "/content/dataset/test",
+    target_size=(img_size, img_size),
+    batch_size=batch_size,
+    class_mode='categorical'
+)
+
+# Step 3: Build ResNet50 Transfer Learning Model
+base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(img_size, img_size, 3))
+
+# Freeze base layers
+for layer in base_model.layers:
+    layer.trainable = False
+
+# Add custom layers
+x = Flatten()(base_model.output)
+x = Dense(256, activation='relu')(x)
+x = Dropout(0.5)(x)
+output = Dense(train_set.num_classes, activation='softmax')(x)
+
+model_resnet = Model(inputs=base_model.input, outputs=output)
+
+model_resnet.compile(optimizer=Adam(learning_rate=0.0001),
+                     loss='categorical_crossentropy',
+                     metrics=['accuracy'])
+
+model_resnet.summary()
+
+# Step 4: Train the Model
+history_resnet = model_resnet.fit(
+    train_set,
+    epochs=15,   # increase to 20–25 for stronger results
+    validation_data=val_set
+)
+
+# Step 5: Evaluate
+loss, acc = model_resnet.evaluate(test_set)
+print(f"ResNet50 Test Accuracy: {acc*100:.2f}%")
+
+# Step 6: Plot Accuracy/Loss
+plt.plot(history_resnet.history['accuracy'], label='train acc')
+plt.plot(history_resnet.history['val_accuracy'], label='val acc')
+plt.legend()
+plt.title("Training vs Validation Accuracy")
+plt.show()
+
+plt.plot(history_resnet.history['loss'], label='train loss')
+plt.plot(history_resnet.history['val_loss'], label='val loss')
+plt.legend()
+plt.title("Training vs Validation Loss")
+plt.show()
+
+# Step 7: Confusion Matrix
+y_true = test_set.classes
+y_pred = model_resnet.predict(test_set)
+y_pred_classes = np.argmax(y_pred, axis=1)
+
+cm = confusion_matrix(y_true, y_pred_classes)
+class_labels = list(train_set.class_indices.keys())
+
+sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+            xticklabels=class_labels,
+            yticklabels=class_labels)
+plt.xlabel("Predicted")
+plt.ylabel("True")
+plt.title("Confusion Matrix")
+plt.show()
+
+print(classification_report(y_true, y_pred_classes, target_names=class_labels))
