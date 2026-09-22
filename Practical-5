@@ -1,52 +1,63 @@
-# STEP 1: Imports
-import numpy as np
+# Step 1: Imports
 import tensorflow as tf
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, LSTM, RepeatVector
-from sklearn.metrics import classification_report, confusion_matrix
-import matplotlib.pyplot as plt
+import tensorflow_datasets as tfds
+from tensorflow.keras.applications import VGG16
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Flatten, Dropout
+from sklearn.metrics import classification_report
+import numpy as np
 
-# STEP 2: Synthetic dataset
-X_normal = np.random.rand(500, 20, 3)
-y_normal = np.zeros(500)
+# Step 2: Load Flowers dataset
+dataset, info = tfds.load('tf_flowers', with_info=True, as_supervised=True)
+train_ds = dataset['train']
 
-X_anomaly = np.random.rand(500, 20, 3) + 2.0
-y_anomaly = np.ones(500)
 
-X = np.concatenate([X_normal, X_anomaly], axis=0)
-y = np.concatenate([y_normal, y_anomaly], axis=0)
+train_size = 1000
+test_size = 200
 
-# STEP 3: Autoencoder
-inputs = Input(shape=(20, 3))
-encoded = LSTM(16)(inputs)
-decoded = RepeatVector(20)(encoded)
-decoded = LSTM(3, return_sequences=True)(decoded)
+train_data = train_ds.take(train_size)
+test_data = train_ds.skip(train_size).take(test_size)
 
-autoencoder = Model(inputs, decoded)
-autoencoder.compile(optimizer='adam', loss='mse')
 
-# STEP 4: Train on normal data
-history = autoencoder.fit(X_normal, X_normal, epochs=20, batch_size=32, verbose=1)
+def preprocess(image, label):
+    image = tf.image.resize(image, (128, 128)) / 255.0
+    return image, label
 
-# STEP 5: Reconstruction error
-X_pred = autoencoder.predict(X)
-errors = np.mean(np.square(X - X_pred), axis=(1,2))
+train_data = train_data.map(preprocess).batch(32).shuffle(500)
+test_data = test_data.map(preprocess).batch(32)
 
-# STEP 6: Threshold
-threshold = np.percentile(errors, 95)
-y_pred = (errors > threshold).astype(int)
 
-# STEP 7: Evaluation outputs
-print("Confusion Matrix:\n", confusion_matrix(y, y_pred))
-print("\nClassification Report:\n", classification_report(y, y_pred))
+base_model = VGG16(weights='imagenet', include_top=False, input_shape=(128, 128, 3))
+for layer in base_model.layers:
+    layer.trainable = False
 
-# STEP 8: Visualize errors
-plt.figure(figsize=(8,5))
-plt.hist(errors[y==0], bins=50, alpha=0.6, label="Normal")
-plt.hist(errors[y==1], bins=50, alpha=0.6, label="Anomaly")
-plt.axvline(threshold, color='red', linestyle='--', label="Threshold")
-plt.xlabel("Reconstruction Error")
-plt.ylabel("Count")
-plt.legend()
-plt.title("Error Distribution: Normal vs Anomaly")
-plt.show()
+model = Sequential([
+    base_model,
+    Flatten(),
+    Dense(128, activation='relu'),
+    Dropout(0.5),
+    Dense(info.features['label'].num_classes, activation='softmax')
+])
+
+
+model.compile(optimizer='adam',
+              loss='sparse_categorical_crossentropy',
+              metrics=['accuracy'])
+
+
+history = model.fit(train_data, epochs=3, validation_data=test_data)
+
+
+loss, acc = model.evaluate(test_data)
+print(f"Test Accuracy: {acc*100:.2f}%")
+
+
+y_true, y_pred = [], []
+for images, labels in test_data:
+    preds = model.predict(images)
+    y_true.extend(labels.numpy())
+    y_pred.extend(np.argmax(preds, axis=1))
+
+print("\nClassification Report:\n")
+print(classification_report(y_true, y_pred,
+                            target_names=[str(i) for i in range(info.features['label'].num_classes)]))
