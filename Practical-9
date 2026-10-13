@@ -1,0 +1,202 @@
+# ============================================
+# SENTIMENT ANALYSIS USING RNN
+# ============================================
+
+import numpy as np
+import tensorflow as tf
+import matplotlib.pyplot as plt
+
+from tensorflow.keras.datasets import imdb
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Embedding, SimpleRNN, Dense
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+
+from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
+    accuracy_score,
+    ConfusionMatrixDisplay
+)
+
+print("TensorFlow version:", tf.__version__)
+
+# ============================================
+# PARAMETERS
+# ============================================
+
+VOCAB_SIZE = 10000
+MAX_LENGTH = 200
+
+print("Vocabulary size:", VOCAB_SIZE)
+print("Maximum review length:", MAX_LENGTH)
+
+# ============================================
+# LOAD IMDb DATASET
+# ============================================
+
+(x_train, y_train), (x_test, y_test) = imdb.load_data(
+    num_words=VOCAB_SIZE
+)
+
+print("Training samples:", len(x_train))
+print("Testing samples :", len(x_test))
+
+print("First review:")
+print(x_train[0])
+
+print("\nFirst label:")
+print(y_train[0])
+
+# ============================================
+# PAD SEQUENCES
+# ============================================
+
+x_train = pad_sequences(
+    x_train,
+    maxlen=MAX_LENGTH,
+    padding="post",
+    truncating="post"
+)
+
+x_test = pad_sequences(
+    x_test,
+    maxlen=MAX_LENGTH,
+    padding="post",
+    truncating="post"
+)
+
+print("Training shape:", x_train.shape)
+print("Testing shape :", x_test.shape)
+
+# ============================================
+# BUILD RNN MODEL
+# ============================================
+
+model = Sequential([
+    # Convert word IDs into dense vectors
+    Embedding(
+        input_dim=VOCAB_SIZE,
+        output_dim=64
+    ),
+
+    # Recurrent neural network layer
+    SimpleRNN(64),
+
+    # Output layer for binary classification
+    Dense(1, activation="sigmoid")
+])
+
+model.compile(
+    optimizer="adam",
+    loss="binary_crossentropy",
+    metrics=["accuracy"]
+)
+
+model.summary()
+
+# ============================================
+# TRAIN RNN
+# ============================================
+
+history = model.fit(
+    x_train,
+    y_train,
+    epochs=5,
+    batch_size=128,
+    validation_split=0.2,
+    verbose=1
+)
+
+# ============================================
+# SENTIMENT PREDICTION DEMONSTRATION
+# ============================================
+
+word_index = imdb.get_word_index()
+
+
+def predict_sentiment(review):
+    words = review.lower().split()
+    sequence = [1]  # IMDb start token
+
+    for word in words:
+        word = word.strip(".,!?;:\"'()[]{}")
+
+        # IMDb reserves indices 0–3 for special tokens
+        idx = word_index.get(word, 2) + 3
+
+        if idx >= VOCAB_SIZE:
+            idx = 2
+
+        sequence.append(idx)
+
+    # Make input length consistent with training
+    padded = pad_sequences(
+        [sequence],
+        maxlen=MAX_LENGTH,
+        padding="post",
+        truncating="post"
+    )
+
+    # Predict sentiment
+    probability = float(
+        model.predict(padded, verbose=0)[0][0]
+    )
+
+    sentiment = (
+        "Positive 😊" if probability >= 0.5
+        else "Negative 😞"
+    )
+
+    print("\n========== SENTIMENT RESULT ==========")
+    print("Review:", review)
+    print(f"Positive probability: {probability:.2%}")
+    print(f"Negative probability: {1 - probability:.2%}")
+    print("Predicted sentiment:", sentiment)
+    print("======================================")
+
+
+review = input("Enter a movie review: ")
+predict_sentiment(review)
+
+# ============================================
+# EVALUATE MODEL ON TEST DATA
+# ============================================
+
+y_probability = model.predict(
+    x_test,
+    batch_size=128,
+    verbose=1
+).ravel()
+
+y_pred = (y_probability >= 0.5).astype(int)
+
+# Accuracy
+accuracy = accuracy_score(y_test, y_pred)
+print(f"\nTest Accuracy: {accuracy * 100:.2f}%")
+
+# Classification report
+print("\nCLASSIFICATION REPORT")
+print(classification_report(
+    y_test,
+    y_pred,
+    labels=[0, 1],
+    target_names=["Negative", "Positive"],
+    digits=4,
+    zero_division=0
+))
+
+# Confusion matrix
+cm = confusion_matrix(
+    y_test,
+    y_pred,
+    labels=[0, 1]
+)
+
+disp = ConfusionMatrixDisplay(
+    confusion_matrix=cm,
+    display_labels=["Negative", "Positive"]
+)
+
+disp.plot(cmap="Blues", values_format="d")
+plt.title("RNN Sentiment Analysis - Confusion Matrix")
+plt.show()
