@@ -1,0 +1,426 @@
+# ============================================
+# PRODUCT RECOMMENDATION FROM KAGGLE RETAIL DATA
+# Neural Collaborative Filtering with TensorFlow
+# ============================================
+
+!pip -q install kagglehub openpyxl
+
+import glob
+import os
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+import kagglehub
+import matplotlib.pyplot as plt
+import ipywidgets as widgets
+
+from IPython.display import display, clear_output
+from sklearn.model_selection import train_test_split
+
+np.random.seed(42)
+tf.random.set_seed(42)
+
+# ============================================
+# 1. DOWNLOAD KAGGLE DATASET
+# ============================================
+
+dataset_path = kagglehub.dataset_download(
+    "lakshmi25npathi/online-retail-dataset"
+)
+
+print("Dataset downloaded to:", dataset_path)
+
+data_files = (
+    glob.glob(os.path.join(dataset_path, "**", "*.csv"), recursive=True)
+    + glob.glob(os.path.join(dataset_path, "**", "*.xlsx"), recursive=True)
+    + glob.glob(os.path.join(dataset_path, "**", "*.xls"), recursive=True)
+)
+
+if not data_files:
+    raise FileNotFoundError("No CSV or Excel file found in the downloaded dataset.")
+
+data_file = data_files[0]
+print("Loading:", data_file)
+
+if data_file.lower().endswith(".csv"):
+    sales = pd.read_csv(data_file, encoding="latin1")
+else:
+    sales = pd.read_excel(data_file)
+
+# Normalize column names.
+sales.columns = (
+    sales.columns.astype(str)
+    .str.strip()
+    .str.lower()
+    .str.replace(" ", "", regex=False)
+)
+
+print("Dataset shape:", sales.shape)
+print("Columns:", sales.columns.tolist())
+display(sales.head())
+
+# ============================================
+# 2. CLEAN SALES DATA
+# ============================================
+
+required_columns = {"customerid", "stockcode", "quantity"}
+missing_columns = required_columns - set(sales.columns)
+
+if missing_columns:
+    raise ValueError(
+        f"Dataset is missing required columns: {missing_columns}"
+    )
+
+sales = sales.dropna(subset=["customerid", "stockcode"]).copy()
+sales["customerid"] = sales["customerid"].astype(str)
+sales["stockcode"] = sales["stockcode"].astype(str)
+sales["quantity"] = pd.to_numeric(sales["quantity"], errors="coerce")
+sales = sales.dropna(subset=["quantity"])
+
+# Remove returns and cancelled invoices.
+sales = sales[sales["quantity"] > 0]
+
+if "invoiceno" in sales.columns:
+    sales = sales[
+        ~sales["invoiceno"].astype(str).str.startswith("C", na=False)
+    ]
+
+# Create a product description lookup when descriptions are available.
+if "description" in sales.columns:
+    product_descriptions = (
+        sales.dropna(subset=["stockcode"])
+        .groupby("stockcode")["description"]
+        .agg(
+            lambda values: (
+                values.dropna().astype(str).iloc[0]
+                if not values.dropna().empty
+                else ""
+            )
+        )
+        .to_dict()
+    )
+else:
+    product_descriptions = {}
+
+# Combine repeated customer-product purchases.
+interactions = (
+    sales.groupby(["customerid", "stockcode"], as_index=False)
+    .agg(quantity=("quantity", "sum"))
+)
+
+interactions = interactions[interactions["quantity"] > 0].reset_index(drop=True)
+
+print("Valid customer-product interactions:", len(interactions))
+print("Unique customers:", interactions["customerid"].nunique())
+print("Unique products:", interactions["stockcode"].nunique())
+
+# ============================================
+# 3. ENCODE CUSTOMERS AND PRODUCTS
+# ============================================
+
+user_ids = interactions["customerid"].unique()
+item_ids = interactions["stockcode"].unique()
+
+user_to_index = {user_id: i for i, user_id in enumerate(user_ids)}
+item_to_index = {item_id: i for i, item_id in enumerate(item_ids)}
+index_to_item = {i: item_id for item_id, i in item_to_index.items()}
+
+interactions["user_idx"] = interactions["customerid"].map(user_to_index)
+interactions["item_idx"] = interactions["stockcode"].map(item_to_index)
+
+num_users = len(user_to_index)
+num_items = len(item_to_index)
+
+print("Customers:", num_users)
+print("Products:", num_items)
+
+# ============================================
+# 4. CREATE TRAINING DATA
+# ============================================
+
+# Purchases are positive interactions.
+positive_pairs = interactions[["user_idx", "item_idx"]].to_numpy(
+    dtype=np.int32
+)
+positive_set = set(map(tuple, positive_pairs))
+
+# Sample one unpurchased product for each purchase as a negative example.
+rng = np.random.default_rng(42)
+negative_pairs = []
+
+for user_idx, _ in positive_pairs:
+    for _ in range(100):
+        negative_item = int(rng.integers(num_items))
+        if (user_idx, negative_item) not in positive_set:
+            negative_pairs.append([user_idx, negative_item])
+            break
+
+negative_pairs = np.asarray(negative_pairs, dtype=np.int32)
+
+if len(negative_pairs) == 0:
+    raise ValueError("Could not create negative examples.")
+
+X = np.vstack([positive_pairs, negative_pairs])
+y = np.concatenate([
+    np.ones(len(positive_pairs), dtype=np.float32),
+    np.zeros(len(negative_pairs), dtype=np.float32)
+])
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.2,
+    random_state=42,
+    stratify=y
+)
+
+train_users = X_train[:, 0]
+train_items = X_train[:, 1]
+test_users = X_test[:, 0]
+test_items = X_test[:, 1]
+
+print("Training examples:", len(X_train))
+print("Testing examples:", len(X_test))
+
+# ============================================
+# 5. BUILD RECOMMENDATION MODEL
+# ============================================
+
+embedding_size = 32
+
+user_input = tf.keras.Input(shape=(1,), name="user")
+item_input = tf.keras.Input(shape=(1,), name="item")
+
+user_embedding = tf.keras.layers.Embedding(
+    input_dim=num_users,
+    output_dim=embedding_size,
+    name="user_embedding"
+)(user_input)
+
+item_embedding = tf.keras.layers.Embedding(
+    input_dim=num_items,
+    output_dim=embedding_size,
+    name="item_embedding"
+)(item_input)
+
+user_vector = tf.keras.layers.Flatten()(user_embedding)
+item_vector = tf.keras.layers.Flatten()(item_embedding)
+
+x = tf.keras.layers.Concatenate()([user_vector, item_vector])
+x = tf.keras.layers.Dense(64, activation="relu")(x)
+x = tf.keras.layers.Dense(32, activation="relu")(x)
+output = tf.keras.layers.Dense(1, activation="sigmoid")(x)
+
+model = tf.keras.Model(
+    inputs=[user_input, item_input],
+    outputs=output,
+    name="RetailRecommendationModel"
+)
+
+model.compile(
+    optimizer="adam",
+    loss="binary_crossentropy",
+    metrics=[
+        "accuracy",
+        tf.keras.metrics.AUC(name="auc")
+    ]
+)
+
+model.summary()
+
+# ============================================
+# 6. TRAIN AND EVALUATE
+# ============================================
+
+history = model.fit(
+    [train_users, train_items],
+    y_train,
+    validation_split=0.1,
+    epochs=5,
+    batch_size=512,
+    verbose=1
+)
+
+test_loss, test_accuracy, test_auc = model.evaluate(
+    [test_users, test_items],
+    y_test,
+    verbose=0
+)
+
+print(f"Test loss:     {test_loss:.4f}")
+print(f"Test accuracy: {test_accuracy:.4f}")
+print(f"Test AUC:      {test_auc:.4f}")
+
+# ============================================
+# 7. RECOMMENDATION FUNCTION
+# ============================================
+
+def recommend_products(customer_id, top_n=10):
+    """Rank unpurchased products for one customer in a single model call."""
+
+    customer_id = str(customer_id)
+
+    if customer_id not in user_to_index:
+        print("Customer ID not found in the dataset.")
+        return pd.DataFrame()
+
+    user_idx = user_to_index[customer_id]
+
+    purchased_items = set(
+        interactions.loc[
+            interactions["user_idx"] == user_idx,
+            "item_idx"
+        ].tolist()
+    )
+
+    candidate_items = np.array(
+        [i for i in range(num_items) if i not in purchased_items],
+        dtype=np.int32
+    )
+
+    if len(candidate_items) == 0:
+        print("No unpurchased products available.")
+        return pd.DataFrame()
+
+    # Score all available products together for faster inference.
+    candidate_users = np.full(
+        len(candidate_items),
+        user_idx,
+        dtype=np.int32
+    )
+
+    scores = model.predict(
+        [candidate_users, candidate_items],
+        batch_size=2048,
+        verbose=0
+    ).ravel()
+
+    top_positions = np.argsort(scores)[::-1][:top_n]
+    recommended_ids = [
+        index_to_item[candidate_items[position]]
+        for position in top_positions
+    ]
+
+    return pd.DataFrame({
+        "Product_ID": recommended_ids,
+        "Description": [
+            product_descriptions.get(product_id, "")
+            for product_id in recommended_ids
+        ],
+        "Recommendation_Score": scores[top_positions]
+    })
+
+
+# ============================================
+# 8. INTERACTIVE DEMONSTRATION
+# ============================================
+
+# Use customers with at least three distinct purchased products.
+purchase_counts = interactions.groupby("customerid").size()
+demo_customers = purchase_counts[purchase_counts >= 3].sort_values(
+    ascending=False
+).head(100).index.tolist()
+
+if not demo_customers:
+    demo_customers = purchase_counts.index.tolist()
+
+customer_dropdown = widgets.Dropdown(
+    options=[
+        (f"Customer {customer_id} ({purchase_counts[customer_id]} products)",
+         customer_id)
+        for customer_id in demo_customers
+    ],
+    description="Customer:",
+    layout=widgets.Layout(width="500px")
+)
+
+top_n_slider = widgets.IntSlider(
+    value=10,
+    min=5,
+    max=20,
+    step=1,
+    description="Top N:",
+    continuous_update=False
+)
+
+output_area = widgets.Output()
+
+
+def show_customer_demo(customer_id, top_n):
+    with output_area:
+        clear_output(wait=True)
+
+        customer_id = str(customer_id)
+        print(f"Customer: {customer_id}")
+
+        # Display a sample of the customer's purchase history.
+        history_df = interactions[
+            interactions["customerid"] == customer_id
+        ].sort_values("quantity", ascending=False).head(10).copy()
+
+        history_df["description"] = history_df["stockcode"].map(
+            product_descriptions
+        ).fillna("")
+
+        print("\nPreviously purchased products:")
+        display(
+            history_df[["stockcode", "description", "quantity"]]
+            .rename(columns={
+                "stockcode": "Product_ID",
+                "description": "Description",
+                "quantity": "Total_Quantity"
+            })
+            .reset_index(drop=True)
+        )
+
+        # Generate ranked recommendations.
+        recommendations = recommend_products(customer_id, top_n=top_n)
+
+        print(f"\nTop {top_n} recommendations:")
+        display(recommendations.reset_index(drop=True))
+
+        # Visualize recommendation scores.
+        if not recommendations.empty:
+            labels = recommendations["Product_ID"].astype(str)
+            descriptions = recommendations["Description"].fillna("")
+
+            # Include description in chart labels when available.
+            chart_labels = [
+                f"{product_id} — {description[:28]}"
+                if description
+                else product_id
+                for product_id, description
+                in zip(labels, descriptions)
+            ]
+
+            plt.figure(figsize=(10, max(4, top_n * 0.35)))
+            plt.barh(
+                chart_labels[::-1],
+                recommendations["Recommendation_Score"].values[::-1],
+                color="teal"
+            )
+            plt.xlabel("Recommendation score")
+            plt.ylabel("Product")
+            plt.title(f"Recommended products for customer {customer_id}")
+            plt.tight_layout()
+            plt.show()
+
+
+def on_selection_change(change):
+    if change["name"] == "value":
+        show_customer_demo(
+            customer_dropdown.value,
+            top_n_slider.value
+        )
+
+
+customer_dropdown.observe(on_selection_change, names="value")
+top_n_slider.observe(on_selection_change, names="value")
+
+display(customer_dropdown, top_n_slider, output_area)
+
+# Show the first demonstration immediately.
+show_customer_demo(
+    customer_dropdown.value,
+    top_n_slider.value
+)
