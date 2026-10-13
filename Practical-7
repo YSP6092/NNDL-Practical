@@ -1,0 +1,168 @@
+import tensorflow as tf
+import tensorflow_hub as hub
+import numpy as np
+import pandas as pd
+import cv2
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from google.colab import files
+
+MODEL_URL = "https://tfhub.dev/tensorflow/ssd_mobilenet_v2/2"
+
+# Load and display the input image
+image = cv2.imread("test_image.jpg")
+
+image_rgb = cv2.cvtColor(
+    image,
+    cv2.COLOR_BGR2RGB
+)
+
+plt.figure(figsize=(12, 8))
+plt.imshow(image_rgb)
+plt.axis("off")
+plt.title("Input Image")
+plt.show()
+
+# Load the object detection model
+print("Loading SSD MobileNet V2...")
+detector = hub.load(MODEL_URL)
+print("SSD MobileNet V2 loaded successfully!")
+
+print("TensorFlow version:", tf.__version__)
+print("GPU:", tf.config.list_physical_devices("GPU"))
+
+# COCO class labels
+COCO_CLASSES = {
+    1: "person",
+    2: "bicycle",
+    3: "car",
+    4: "motorcycle",
+    5: "airplane",
+    6: "bus",
+    7: "train",
+    8: "truck",
+    9: "boat",
+    16: "bird",
+    17: "cat",
+    18: "dog",
+    19: "horse",
+    20: "sheep",
+    21: "cow",
+    22: "elephant",
+    23: "bear",
+    24: "zebra",
+    25: "giraffe",
+    44: "bottle",
+    47: "cup",
+    62: "chair",
+    63: "couch",
+    64: "potted plant",
+    67: "dining table",
+    72: "tv",
+    73: "laptop",
+    74: "mouse",
+    75: "remote",
+    76: "keyboard",
+    77: "cell phone",
+    78: "microwave",
+    79: "oven",
+    81: "sink",
+    82: "refrigerator",
+    84: "book",
+    85: "clock",
+    86: "vase",
+    87: "scissors",
+    88: "teddy bear",
+}
+
+
+def detect_objects(image_path, confidence_threshold=0.40):
+    # Read image
+    image = cv2.imread(image_path)
+
+    if image is None:
+        print("Error: Image could not be loaded.")
+        return None
+
+    # Convert BGR to RGB
+    image_rgb = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2RGB
+    )
+
+    # Convert image to a TensorFlow tensor
+    input_tensor = tf.convert_to_tensor(
+        image_rgb,
+        dtype=tf.uint8
+    )
+
+    # Add a batch dimension
+    input_tensor = input_tensor[tf.newaxis, ...]
+
+    # Run SSD MobileNet prediction
+    detections = detector(input_tensor)
+
+    # Get predictions
+    boxes = detections["detection_boxes"][0].numpy()
+    classes = detections["detection_classes"][0].numpy().astype(np.int32)
+    scores = detections["detection_scores"][0].numpy()
+
+    height, width, _ = image.shape
+    results = []
+
+    # Process each detection
+    for box, class_id, score in zip(boxes, classes, scores):
+        if score < confidence_threshold:
+            continue
+
+        ymin, xmin, ymax, xmax = box
+
+        # Convert normalized coordinates to pixel coordinates
+        x1 = int(xmin * width)
+        y1 = int(ymin * height)
+        x2 = int(xmax * width)
+        y2 = int(ymax * height)
+
+        # Get class name
+        class_name = COCO_CLASSES.get(class_id, "unknown")
+
+        # Draw bounding box
+        cv2.rectangle(
+            image_rgb,
+            (x1, y1),
+            (x2, y2),
+            (0, 255, 0),
+            2
+        )
+
+        # Add label
+        label = f"{class_name}: {score:.2f}"
+        cv2.putText(
+            image_rgb,
+            label,
+            (x1, max(y1 - 10, 20)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 0, 0),
+            2
+        )
+
+        # Store detection result
+        results.append({
+            "Object": class_name,
+            "Confidence": round(float(score), 3),
+            "X1": x1,
+            "Y1": y1,
+            "X2": x2,
+            "Y2": y2,
+        })
+
+    # Display the detection result
+    plt.figure(figsize=(14, 10))
+    plt.imshow(image_rgb)
+    plt.axis("off")
+    plt.title("Smart Surveillance - SSD MobileNet V2")
+    plt.show()
+
+    return pd.DataFrame(results)
