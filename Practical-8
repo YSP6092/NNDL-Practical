@@ -1,0 +1,233 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import tensorflow as tf
+
+from tensorflow.keras import layers, models
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
+    accuracy_score
+)
+from sklearn.manifold import TSNE
+
+print("TensorFlow version:", tf.__version__)
+
+# Normalize pixel values
+x_train = x_train.astype("float32") / 255.0
+x_test = x_test.astype("float32") / 255.0
+
+# Flatten images
+x_train_flat = x_train.reshape(-1, 784)
+x_test_flat = x_test.reshape(-1, 784)
+
+print("After flattening:")
+print("Training:", x_train_flat.shape)
+print("Testing :", x_test_flat.shape)
+
+# Display sample training images
+plt.figure(figsize=(10, 4))
+
+for i in range(10):
+    plt.subplot(2, 5, i + 1)
+    plt.imshow(x_train[i], cmap="gray")
+    plt.title(f"Digit: {y_train[i]}")
+    plt.axis("off")
+
+plt.tight_layout()
+plt.show()
+
+# ============================================
+# BUILD AUTOENCODER
+# ============================================
+
+input_dim = 784
+latent_dim = 16
+
+# Encoder
+encoder = models.Sequential([
+    layers.Input(shape=(input_dim,)),
+    layers.Dense(256, activation="relu"),
+    layers.Dense(64, activation="relu"),
+    layers.Dense(latent_dim, activation="relu")
+], name="Encoder")
+
+# Decoder
+decoder = models.Sequential([
+    layers.Input(shape=(latent_dim,)),
+    layers.Dense(64, activation="relu"),
+    layers.Dense(256, activation="relu"),
+    layers.Dense(input_dim, activation="sigmoid")
+], name="Decoder")
+
+# Complete autoencoder
+autoencoder_input = layers.Input(shape=(input_dim,))
+encoded = encoder(autoencoder_input)
+decoded = decoder(encoded)
+
+autoencoder = models.Model(
+    autoencoder_input,
+    decoded,
+    name="Autoencoder"
+)
+
+autoencoder.compile(
+    optimizer="adam",
+    loss="binary_crossentropy"
+)
+
+autoencoder.summary()
+
+# ============================================
+# TRAIN AUTOENCODER
+# ============================================
+
+history = autoencoder.fit(
+    x_train_flat,
+    x_train_flat,
+    epochs=15,
+    batch_size=256,
+    shuffle=True,
+    validation_data=(x_test_flat, x_test_flat),
+    verbose=1
+)
+
+# Plot training and validation loss
+plt.figure(figsize=(8, 5))
+plt.plot(history.history["loss"], label="Training Loss")
+plt.plot(history.history["val_loss"], label="Validation Loss")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.title("Autoencoder Training and Validation Loss")
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# ============================================
+# EXTRACT LATENT FEATURES
+# ============================================
+
+X_train_encoded = encoder.predict(
+    x_train_flat,
+    batch_size=256,
+    verbose=1
+)
+
+X_test_encoded = encoder.predict(
+    x_test_flat,
+    batch_size=256,
+    verbose=1
+)
+
+print("Original feature size:", x_train_flat.shape[1])
+print("Reduced feature size :", X_train_encoded.shape[1])
+
+# Display dimensionality reduction
+original_dimensions = x_train_flat.shape[1]
+reduced_dimensions = X_train_encoded.shape[1]
+
+print("======================================")
+print("DIMENSIONALITY REDUCTION")
+print("======================================")
+print(f"Original dimensions : {original_dimensions}")
+print(f"Reduced dimensions  : {reduced_dimensions}")
+
+reduction_percentage = (
+    1 - reduced_dimensions / original_dimensions
+) * 100
+
+print(f"Reduction           : {reduction_percentage:.2f}%")
+
+# ============================================
+# RECONSTRUCT IMAGES
+# ============================================
+
+X_test_reconstructed = autoencoder.predict(
+    x_test_flat,
+    batch_size=256,
+    verbose=1
+)
+
+X_test_reconstructed = X_test_reconstructed.reshape(-1, 28, 28)
+
+print("Reconstructed images:", X_test_reconstructed.shape)
+
+# ============================================
+# DISPLAY ORIGINAL AND RECONSTRUCTED IMAGES
+# ============================================
+
+n = 10
+
+plt.figure(figsize=(15, 4))
+
+for i in range(n):
+    # Original image
+    plt.subplot(2, n, i + 1)
+    plt.imshow(x_test[i], cmap="gray")
+    plt.title(f"Original\n{y_test[i]}")
+    plt.axis("off")
+
+    # Reconstructed image
+    plt.subplot(2, n, i + 1 + n)
+    plt.imshow(X_test_reconstructed[i], cmap="gray")
+    plt.title("Reconstructed")
+    plt.axis("off")
+
+plt.tight_layout()
+plt.show()
+
+# ============================================
+# TRAIN CLASSIFIER USING ENCODED FEATURES
+# ============================================
+
+classifier = LogisticRegression(
+    max_iter=1000,
+    solver="lbfgs"
+)
+
+classifier.fit(
+    X_train_encoded,
+    y_train
+)
+
+print("Classifier trained successfully!")
+
+# ============================================
+# BUILD IMPROVED AUTOENCODER
+# ============================================
+
+latent_dim = 32
+
+# Improved encoder
+encoder = tf.keras.Sequential([
+    tf.keras.layers.Input(shape=(784,)),
+    tf.keras.layers.Dense(256, activation="relu"),
+    tf.keras.layers.Dense(128, activation="relu"),
+    tf.keras.layers.Dense(latent_dim, activation="relu")
+], name="Encoder")
+
+# Improved decoder
+decoder = tf.keras.Sequential([
+    tf.keras.layers.Input(shape=(latent_dim,)),
+    tf.keras.layers.Dense(128, activation="relu"),
+    tf.keras.layers.Dense(256, activation="relu"),
+    tf.keras.layers.Dense(784, activation="sigmoid")
+], name="Decoder")
+
+# Complete improved autoencoder
+inputs = tf.keras.Input(shape=(784,))
+encoded = encoder(inputs)
+decoded = decoder(encoded)
+
+autoencoder = tf.keras.Model(
+    inputs,
+    decoded,
+    name="Autoencoder"
+)
+
+autoencoder.compile(
+    optimizer="adam",
+    loss="binary_crossentropy"
+)
+
+autoencoder.summary()
